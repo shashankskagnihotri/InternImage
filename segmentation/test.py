@@ -30,6 +30,11 @@ def parse_args():
     parser.add_argument('config', help='test config file path')
     parser.add_argument('checkpoint', help='checkpoint file')
     parser.add_argument(
+        'gpus',
+        nargs='?',
+        default=None,
+        help='legacy positional argument for number of GPUs (unused)')
+    parser.add_argument(
         '--work-dir',
         help=('if specified, the evaluation metric results will be dumped'
               'into the directory as json'))

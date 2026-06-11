@@ -5,7 +5,7 @@ from itertools import chain
 import mmcv
 import numpy as np
 from mmcv.utils import build_from_cfg, print_log
-from mmseg.datasets.builder import DATASETS
+from mmseg.datasets.builder import DATASETS, build_dataset
 from torch.utils.data.dataset import ConcatDataset as _ConcatDataset
 
 
@@ -23,6 +23,11 @@ class ConcatDataset(_ConcatDataset):
     """
 
     def __init__(self, datasets, separate_eval=True):
+        # Support both pre-built datasets and config dicts.
+        datasets = [
+            build_dataset(dataset) if isinstance(dataset, dict) else dataset
+            for dataset in datasets
+        ]
         super(ConcatDataset, self).__init__(datasets)
         self.CLASSES = datasets[0].CLASSES
         self.PALETTE = datasets[0].PALETTE

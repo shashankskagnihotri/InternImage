@@ -9,9 +9,27 @@ import os
 
 import torch
 from setuptools import find_packages, setup
-from torch.utils.cpp_extension import CUDA_HOME, CppExtension, CUDAExtension
+from torch.utils.cpp_extension import (
+    CUDA_HOME,
+    BuildExtension,
+    CppExtension,
+    CUDAExtension,
+)
 
 requirements = ['torch', 'torchvision']
+
+
+class BuildExtensionSkipCudaVersionCheck(BuildExtension):
+    """Allow building extensions when the system nvcc version differs from torch."""
+
+    def _check_cuda_version(self):
+        try:
+            super()._check_cuda_version()
+        except RuntimeError as err:
+            if 'mismatches the version that was used to compile' in str(err):
+                print(f'WARNING: {err}\nProceeding with build anyway.')
+            else:
+                raise
 
 
 def get_extensions():
@@ -66,5 +84,5 @@ setup(
         'tests',
     )),
     ext_modules=get_extensions(),
-    cmdclass={'build_ext': torch.utils.cpp_extension.BuildExtension},
+    cmdclass={'build_ext': BuildExtensionSkipCudaVersionCheck},
 )

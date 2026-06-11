@@ -30,7 +30,7 @@ model = dict(
         level2_post_norm=True, # for InternImage-H/G
         level2_post_norm_block_ids=[5, 11, 17, 23, 29], # for InternImage-H/G
         center_feature_scale=True, # for InternImage-H/G
-        with_cp=False,
+        with_cp=True,
         out_indices=(0, 1, 2, 3),
         init_cfg=None),
     decode_head=dict(
@@ -66,7 +66,7 @@ model = dict(
                         feedforward_channels=1024,
                         num_fcs=2,
                         ffn_drop=0.0,
-                        with_cp=False,  # set with_cp=True to save memory
+                        with_cp=True,  # set with_cp=True to save memory
                         act_cfg=dict(type='ReLU', inplace=True)),
                     operation_order=('self_attn', 'norm', 'ffn', 'norm')),
                 init_cfg=None),
@@ -96,7 +96,7 @@ model = dict(
                     act_cfg=dict(type='ReLU', inplace=True),
                     ffn_drop=0.0,
                     dropout_layer=None,
-                    with_cp=False,  # set with_cp=True to save memory
+                    with_cp=True,  # set with_cp=True to save memory
                     add_identity=True),
                 feedforward_channels=2048,
                 operation_order=('cross_attn', 'norm', 'self_attn', 'norm',
@@ -152,12 +152,91 @@ lr_config = dict(_delete_=True, policy='poly',
                  warmup_ratio=1e-6,
                  power=1.0, min_lr=0.0, by_epoch=False)
 # By default, models are trained on 8 GPUs with 2 images per GPU
-data = dict(samples_per_gpu=2,
-            train=dict(pipeline=train_pipeline),
-            val=dict(pipeline=test_pipeline),
-            test=dict(pipeline=test_pipeline))
+data = dict(
+    samples_per_gpu=1,
+    train=dict(
+        _delete_=True,
+        type='ConcatDataset',
+        datasets=[
+            dict(
+                type='CityscapesDataset',
+                data_root='/ceph/sagnihot/datasets/cityscapes',
+                img_dir='leftImg8bit/train',
+                ann_dir='gtFine/train',
+                pipeline=train_pipeline),
+            dict(
+                type='CityscapesDataset',
+                data_root='/ceph/sagnihot/datasets/cityscapes',
+                img_dir='leftImg8bit/train_extra',
+                ann_dir='refinement_final_trainIds/train_extra',
+                img_suffix='_leftImg8bit.png',
+                seg_map_suffix='_leftImg8bit.png',
+                pipeline=train_pipeline),
+        ],
+        separate_eval=False),
+    val=dict(pipeline=test_pipeline),
+    test=dict(pipeline=test_pipeline))
 runner = dict(type='IterBasedRunner')
 optimizer_config = dict(_delete_=True, grad_clip=dict(max_norm=0.1, norm_type=2))
 checkpoint_config = dict(by_epoch=False, interval=1000, max_keep_ckpts=1)
 evaluation = dict(interval=2000, metric='mIoU', save_best='mIoU')
+post_validation = dict(
+    metric='mIoU',
+    acdc_subsets=[
+        'acdc_rain_val', 'acdc_fog_val', 'acdc_night_val', 'acdc_snow_val'
+    ],
+    datasets=[
+        dict(
+            name='cityscapes_val',
+            type='CityscapesDataset',
+            data_root='/ceph/sagnihot/datasets/cityscapes',
+            img_dir='leftImg8bit/val',
+            ann_dir='gtFine/val',
+            pipeline=test_pipeline),
+        dict(
+            name='acdc_rain_val',
+            type='CityscapesDataset',
+            data_root='/ceph/sagnihot/datasets/ACDC',
+            img_dir='rgb_anon/rain/val',
+            ann_dir='gt/rain/val',
+            img_suffix='_rgb_anon.png',
+            seg_map_suffix='_gt_labelTrainIds.png',
+            pipeline=test_pipeline),
+        dict(
+            name='acdc_fog_val',
+            type='CityscapesDataset',
+            data_root='/ceph/sagnihot/datasets/ACDC',
+            img_dir='rgb_anon/fog/val',
+            ann_dir='gt/fog/val',
+            img_suffix='_rgb_anon.png',
+            seg_map_suffix='_gt_labelTrainIds.png',
+            pipeline=test_pipeline),
+        dict(
+            name='acdc_night_val',
+            type='CityscapesDataset',
+            data_root='/ceph/sagnihot/datasets/ACDC',
+            img_dir='rgb_anon/night/val',
+            ann_dir='gt/night/val',
+            img_suffix='_rgb_anon.png',
+            seg_map_suffix='_gt_labelTrainIds.png',
+            pipeline=test_pipeline),
+        dict(
+            name='acdc_snow_val',
+            type='CityscapesDataset',
+            data_root='/ceph/sagnihot/datasets/ACDC',
+            img_dir='rgb_anon/snow/val',
+            ann_dir='gt/snow/val',
+            img_suffix='_rgb_anon.png',
+            seg_map_suffix='_gt_labelTrainIds.png',
+            pipeline=test_pipeline),
+        dict(
+            name='darkzurich_val',
+            type='CityscapesDataset',
+            data_root='/ceph/sagnihot/datasets/DarkZurich',
+            img_dir='rgb_anon/val/night',
+            ann_dir='gt/val/night',
+            img_suffix='_rgb_anon.png',
+            seg_map_suffix='_gt_labelTrainIds.png',
+            pipeline=test_pipeline),
+    ])
 # fp16 = dict(loss_scale=dict(init_scale=512))

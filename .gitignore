@@ -8,3 +8,11 @@ checkpoint_dir/
 demo/
 pretrained/
 upload.py
+work_dirs/
+workspace/
+slurm/
+*.png
+*.pt
+*.zip
+*.pth
+data/
