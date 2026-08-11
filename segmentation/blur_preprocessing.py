@@ -7,6 +7,7 @@ import matplotlib.image as mpimage
 import torchvision.utils as vutils
 import matplotlib.colors as c
 from torch import tensor
+import kornia
 
 def calculate_weight(channels, depth, single_color, color_opponency, black_white):
     weight_array = np.ones((channels, depth * 3, 1, 1))
@@ -110,7 +111,8 @@ def save_image(image_tensor, where, save_name, channels, path, training):
 
 
 class BlurPreprocessing(nn.Module):
-    def __init__(self, blur_bool, blur_depth, single_color, color_opponency, channels, path, training, black_white, normalize, sparsity_threshold, sparsity_type, change_range):
+    def __init__(self, blur_bool, blur_depth, single_color, color_opponency, channels, path, training, black_white, normalize, sparsity_threshold, 
+    sparsity_type, change_range, conventional_contrast_type=None):
         super().__init__()
         self.blur = blur_bool
         self.num_images = blur_depth + 1
@@ -125,6 +127,7 @@ class BlurPreprocessing(nn.Module):
         self.sparsity_threshold = sparsity_threshold
         self.sparsity_type = sparsity_type
         self.change_range = change_range
+        self.conventional_contrast_type = conventional_contrast_type
 
         if self.blur:
 
@@ -176,14 +179,55 @@ class BlurPreprocessing(nn.Module):
                 x = self.conv_blur(x)
                 concat_image = torch.concat([concat_image, x], dim=1)
 
-            x = self.custom_layer(concat_image)
+            x = self.custom_layer(concat_image)      
 
-            
+            if self.conventional_contrast_type == "canny":
+                edges, _ = kornia.filters.canny(x)
+                x = edges.repeat(1, 3, 1, 1)
+    
+            elif self.conventional_contrast_type == "sobel":
+                # for grayscale contrast
+                x = kornia.color.rgb_to_grayscale(x)
+                sobel_x = torch.tensor(
+                    [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
+                    dtype=x.dtype,
+                    device=x.device,
+                ).unsqueeze(0)
+                sobel_y = torch.tensor(
+                    [[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]],
+                    dtype=x.dtype,
+                    device=x.device,
+                ).unsqueeze(0)
+                grad_x = nn.functional.conv2d(x, sobel_x, padding=1)
+                grad_y = nn.functional.conv2d(x, sobel_y, padding=1)
+                x = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+                x = x.repeat(1, 3, 1, 1)
+    
+            elif self.conventional_contrast_type == "sobel_per_channel":
+                # for contrast per channel
+                groups = x.shape[1]
+                sobel_x = torch.tensor(
+                    [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
+                    dtype=x.dtype,
+                    device=x.device,
+                ).unsqueeze(0).repeat(groups, 1, 1, 1)
+                sobel_y = torch.tensor(
+                    [[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]],
+                    dtype=x.dtype,
+                    device=x.device,
+                ).unsqueeze(0).repeat(groups, 1, 1, 1)
+                grad_x = nn.functional.conv2d(x, sobel_x, padding=1, groups=groups)
+                grad_y = nn.functional.conv2d(x, sobel_y, padding=1, groups=groups)
+                x = torch.sqrt(grad_x ** 2 + grad_y ** 2)
 
+            elif self.conventional_contrast_type == "fourier_high_pass":
+                fourier_high_pass = FourierHighPass(sparsity_percentage=self.sparsity_threshold*100)
+                x = fourier_high_pass(x)
+           
             if self.channels == 1:
                 x = self.change_channel_layer(x)
 
-            if self.sparsity_threshold > 0.0:
+            if self.sparsity_threshold > 0.0 and self.conventional_contrast_type != "fourier_high_pass":
                 # print("\n\n\n\t\t\t\tApplying sparsity to the image")
                 #percentage based sparsity
                 if self.sparsity_type == 'percentage':
@@ -243,3 +287,124 @@ class SparsifyRGB(nn.Module):
                 x = sparse_image
 
         return x
+
+class ConventionalContrastRGB(nn.Module):
+    def __init__(self, sparsity_threshold, sparsity_type, conventional_contrast_type):
+        super().__init__()
+        self.sparsity_threshold = sparsity_threshold
+        self.sparsity_type = sparsity_type
+        self.conventional_contrast_type = conventional_contrast_type
+
+    def forward(self, x):
+        if self.conventional_contrast_type == "canny":
+            edges, _ = kornia.filters.canny(x)
+            x = edges.repeat(1, 3, 1, 1)
+
+        elif self.conventional_contrast_type == "sobel":
+            # for grayscale contrast
+            x = kornia.color.rgb_to_grayscale(x)
+            sobel_x = torch.tensor(
+                [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
+                dtype=x.dtype,
+                device=x.device,
+            ).unsqueeze(0)
+            sobel_y = torch.tensor(
+                [[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]],
+                dtype=x.dtype,
+                device=x.device,
+            ).unsqueeze(0)
+            grad_x = nn.functional.conv2d(x, sobel_x, padding=1)
+            grad_y = nn.functional.conv2d(x, sobel_y, padding=1)
+            x = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+            x = x.repeat(1, 3, 1, 1)
+
+        elif self.conventional_contrast_type == "sobel_per_channel":
+            # for contrast per channel
+            groups = x.shape[1]
+            sobel_x = torch.tensor(
+                [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
+                dtype=x.dtype,
+                device=x.device,
+            ).unsqueeze(0).repeat(groups, 1, 1, 1)
+            sobel_y = torch.tensor(
+                [[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]],
+                dtype=x.dtype,
+                device=x.device,
+            ).unsqueeze(0).repeat(groups, 1, 1, 1)
+            grad_x = nn.functional.conv2d(x, sobel_x, padding=1, groups=groups)
+            grad_y = nn.functional.conv2d(x, sobel_y, padding=1, groups=groups)
+            x = torch.sqrt(grad_x ** 2 + grad_y ** 2)
+        
+        elif self.conventional_contrast_type == "fourier_high_pass":
+            fourier_high_pass = FourierHighPass(sparsity_percentage=self.sparsity_threshold*100)
+            x = fourier_high_pass(x)
+        
+        if self.sparsity_threshold > 0.0 and self.conventional_contrast_type != "fourier_high_pass":
+            if self.sparsity_type == 'percentage':
+                num_elements = x.numel()
+                k = int(self.sparsity_threshold * num_elements)
+
+                if k > 0:
+                    abs_vals = x.abs().flatten()
+                    threshold = torch.topk(abs_vals, k, largest=False).values.max()
+                    sparse_image = torch.where(x.abs() <= threshold, torch.tensor(0.0, device=x.device), x)
+                    x = sparse_image
+            else:
+                sparse_image = torch.where(x.abs() < self.sparsity_threshold, torch.tensor(0.0, device=x.device), x)
+                x = sparse_image
+        
+        return x
+
+class FourierHighPass(nn.Module):
+    """
+    Removes the central low-frequency region and keeps high frequencies.
+
+    sparsity_percentage:
+        0   -> remove nothing
+        50  -> remove approximately the central 50% along height and width
+        100 -> remove everything
+    """
+
+    def __init__(self, sparsity_percentage: float = 50.0):
+        super().__init__()
+
+        if not 0 <= sparsity_percentage <= 100:
+            raise ValueError("sparsity_percentage must be between 0 and 100.")
+
+        self.sparsity_percentage = sparsity_percentage
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # At 0%, no frequencies are removed.
+        if self.sparsity_percentage == 0:
+            return x
+
+        height = x.shape[-2]
+        width = x.shape[-1]
+
+        # Transform to the Fourier domain.
+        spectrum = torch.fft.fft2(x, dim=(-2, -1), norm="forward")
+
+        # Get the vertical and horizontal frequency coordinates.
+        vertical_frequencies = torch.fft.fftfreq(height, device=x.device)
+        horizontal_frequencies = torch.fft.fftfreq(width, device=x.device)
+
+        # Convert the percentage into a frequency cutoff.
+        cutoff = 0.5 * self.sparsity_percentage / 100.0
+
+        # Select the rectangular low-frequency region.
+        low_frequency_mask = (
+            (vertical_frequencies.abs() <= cutoff)[:, None]
+            & (horizontal_frequencies.abs() <= cutoff)[None, :]
+        )
+
+        # Set low-frequency coefficients to zero.
+        spectrum = spectrum.masked_fill(low_frequency_mask, 0.0)
+
+        # Transform back to the spatial domain.
+        output = torch.fft.ifft2(
+            spectrum,
+            dim=(-2, -1),
+            norm="forward",
+        ).real
+
+        return output

@@ -57,7 +57,7 @@ from mmseg.datasets import build_dataloader, build_dataset
 from mmseg.models import build_segmentor
 from mmseg.utils import (collect_env, get_device, get_root_logger,
                          setup_multi_processes)
-from blur_preprocessing import BlurPreprocessing, SparsifyRGB
+from blur_preprocessing import BlurPreprocessing, ConventionalContrastRGB, SparsifyRGB
 
 
 def parse_args():
@@ -148,10 +148,21 @@ def parse_args():
         choices=['baseline', 'black_white', 'color_opponency', 'single_color'],
         help='input preprocessing type to apply before model forward.')
     parser.add_argument(
+            '--depth',
+            type=int,
+            default=5,
+            help='depth level to apply for input preprocessing (default: 5)".')
+    parser.add_argument(
         '--sparsity',
         type=float,
         default=0.0,
         help='sparsity level to apply for input preprocessing, e.g. "0.7" or "70%".')
+    parser.add_argument(
+            '--conventional-contrast-type',
+            type=str,
+            default=None,
+            choices=['canny', 'sobel', 'sobel_per_channel', 'fourier_high_pass'],
+            help='conventional contrast type to apply for input preprocessing.')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
@@ -209,7 +220,13 @@ def _setup_log_hooks(cfg, logger):
     cfg.log_config.hooks = hooks
 
 
-def _build_blur_preprocessor(preprocessing, work_dir, sparsity=0.0):
+def _build_blur_preprocessor(preprocessing, work_dir, sparsity=0.0, conventional_contrast_type=None, depth=5):
+    if preprocessing == 'baseline' and conventional_contrast_type is not None:
+        return ConventionalContrastRGB(
+            sparsity_threshold=sparsity,
+            sparsity_type='percentage',
+            conventional_contrast_type=conventional_contrast_type
+        )
     if preprocessing == 'baseline':
         return SparsifyRGB(
             sparsity_threshold=sparsity,
@@ -218,7 +235,7 @@ def _build_blur_preprocessor(preprocessing, work_dir, sparsity=0.0):
     if preprocessing == 'color_opponency':
         return BlurPreprocessing(
             blur_bool=True,
-            blur_depth=5,
+            blur_depth=depth,
             single_color=False,
             color_opponency=True,
             channels=3,
@@ -228,11 +245,12 @@ def _build_blur_preprocessor(preprocessing, work_dir, sparsity=0.0):
             normalize=False,
             sparsity_threshold=sparsity,
             sparsity_type='percentage',
-            change_range=(0, 1))
+            change_range=(0, 1),
+            conventional_contrast_type=conventional_contrast_type)
     if preprocessing == 'black_white':
         return BlurPreprocessing(
             blur_bool=True,
-            blur_depth=5,
+            blur_depth=depth,
             single_color=False,
             color_opponency=False,
             channels=3,
@@ -242,11 +260,12 @@ def _build_blur_preprocessor(preprocessing, work_dir, sparsity=0.0):
             normalize=False,
             sparsity_threshold=sparsity,
             sparsity_type='percentage',
-            change_range=(0, 1))
+            change_range=(0, 1),
+            conventional_contrast_type=conventional_contrast_type)
     if preprocessing == 'single_color':
         return BlurPreprocessing(
             blur_bool=True,
-            blur_depth=5,
+            blur_depth=depth,
             single_color=True,
             color_opponency=False,
             channels=3,
@@ -256,7 +275,8 @@ def _build_blur_preprocessor(preprocessing, work_dir, sparsity=0.0):
             normalize=False,
             sparsity_threshold=sparsity,
             sparsity_type='percentage',
-            change_range=(0, 1))
+            change_range=(0, 1),
+            conventional_contrast_type=conventional_contrast_type)
     raise ValueError(f'Unsupported preprocessing mode: {preprocessing}')
 
 
@@ -286,9 +306,10 @@ def _apply_preprocessing_to_img(blur_preprocessor, img):
     return img
 
 
-def _attach_preprocessing_hook(model, cfg, logger, context, sparsity=0.0):
+def _attach_preprocessing_hook(model, cfg, logger, context, sparsity=0.0, depth=5):
     preprocessing = str(cfg.get('preprocessing', 'baseline'))
-    blur_preprocessor = _build_blur_preprocessor(preprocessing, cfg.work_dir, sparsity=sparsity)
+    blur_preprocessor = _build_blur_preprocessor(preprocessing, cfg.work_dir, sparsity=sparsity, 
+                                                 conventional_contrast_type=cfg.get('conventional_contrast_type', None), depth=depth)
     if blur_preprocessor is None:
         logger.info(f'Preprocessing [{context}]: baseline (disabled).')
         return
@@ -444,7 +465,7 @@ def _evaluate_on_datasets(cfg, checkpoint_path, distributed, logger, args=None):
 
     eval_model = build_segmentor(cfg.model, test_cfg=cfg.get('test_cfg'))
     eval_model.train_cfg = None
-    _attach_preprocessing_hook(eval_model, cfg, logger, context='post-validation', sparsity=args.sparsity)
+    _attach_preprocessing_hook(eval_model, cfg, logger, context='post-validation', sparsity=args.sparsity, depth=args.depth)
 
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
@@ -664,6 +685,9 @@ def main():
     elif cfg.get('preprocessing', None) is None:
         cfg.preprocessing = 'baseline'
 
+    if args.conventional_contrast_type is not None:
+        cfg.conventional_contrast_type = args.conventional_contrast_type
+
     cfg.auto_resume = args.auto_resume
 
     # init distributed env first, since logger depends on the dist info.
@@ -739,7 +763,7 @@ def main():
                             train_cfg=cfg.get('train_cfg'),
                             test_cfg=cfg.get('test_cfg'))
     model.init_weights()
-    _attach_preprocessing_hook(model, cfg, logger, context='training', sparsity=args.sparsity)
+    _attach_preprocessing_hook(model, cfg, logger, context='training', sparsity=args.sparsity, depth=args.depth)
 
     # SyncBN is not support for DP
     if not distributed:
